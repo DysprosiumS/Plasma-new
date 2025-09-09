@@ -1,0 +1,217 @@
+import cv2
+import numpy as np
+import pandas as pd
+import os
+from pathlib import Path
+from typing import List, Tuple, Dict
+import matplotlib.pyplot as plt
+
+class BrightnessPeakDetector:
+    def __init__(self, min_peak_intensity: int = 200, min_pixel_thickness: int = 2,
+                 max_pixel_thickness: int = 20, noise_threshold: float = 0.1):
+        """
+        Инициализация детектора пиков яркости
+        
+        Args:
+            min_peak_intensity: минимальная интенсивность для пика (0-255)
+            min_pixel_thickness: минимальная толщина пика в пикселях
+            max_pixel_thickness: максимальная толщина пика в пикселях
+            noise_threshold: порог для фильтрации шума
+        """
+        self.min_peak_intensity = min_peak_intensity
+        self.min_pixel_thickness = min_pixel_thickness
+        self.max_pixel_thickness = max_pixel_thickness
+        self.noise_threshold = noise_threshold
+    
+    def detect_peaks(self, frame: np.ndarray) -> List[Tuple[int, int]]:
+        """
+        Обнаружение пиков яркости на кадре
+        
+        Args:
+            frame: входной кадр в оттенках серого
+            
+        Returns:
+            Список координат (x, y) обнаруженных пиков
+        """
+        # Преобразование в оттенки серого, если нужно
+        if len(frame.shape) == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = frame.copy()
+        
+        # Применение гауссова размытия для уменьшения шума
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Бинаризация для выделения ярких областей
+        _, binary = cv2.threshold(blurred, self.min_peak_intensity, 255, cv2.THRESH_BINARY)
+        
+        # Морфологические операции для улучшения качества обнаружения
+        kernel = np.ones((3, 3), np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+        
+        # Поиск контуров
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        peaks = []
+        
+        for contour in contours:
+            # Фильтрация по площади (толщине)
+            area = cv2.contourArea(contour)
+            if (area >= self.min_pixel_thickness**2 and 
+                area <= self.max_pixel_thickness**2):
+                
+                # Вычисление центра масс контура
+                M = cv2.moments(contour)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    peaks.append((cx, cy))
+        
+        return peaks
+    
+    def sort_peaks(self, peaks: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+        """
+        Сортировка пиков: сверху вниз, слева направо
+        
+        Args:
+            peaks: список координат пиков
+            
+        Returns:
+            Отсортированный список координат
+        """
+        # Сначала сортируем по Y (сверху вниз), затем по X (слева направо)
+        return sorted(peaks, key=lambda p: (p[1], p[0]))
+
+class VideoAnalyzer:
+    def __init__(self, video_path: str):
+        """
+        Инициализация анализатора видео
+        
+        Args:
+            video_path: путь к видеофайлу
+        """
+        self.video_path = video_path
+        self.cap = cv2.VideoCapture(video_path)
+        
+        if not self.cap.isOpened():
+            raise ValueError(f"Не удалось открыть видео: {video_path}")
+        
+        self.detector = BrightnessPeakDetector()
+        self.results = []
+    
+    def analyze_video(self) -> pd.DataFrame:
+        """
+        Анализ всех кадров видео
+        
+        Returns:
+            DataFrame с результатами анализа
+        """
+        frame_count = 0
+        
+        while True:
+            ret, frame = self.cap.read()
+            
+            if not ret:
+                break
+            
+            # Обнаружение пиков на текущем кадре
+            peaks = self.detector.detect_peaks(frame)
+            sorted_peaks = self.detector.sort_peaks(peaks)
+            
+            # Сохранение результатов
+            frame_result = {'frame': frame_count}
+            
+            # Добавляем координаты для каждой обнаруженной частицы
+            for i, (x, y) in enumerate(sorted_peaks, 1):
+                frame_result[f'particle_{i}_x'] = x
+                frame_result[f'particle_{i}_y'] = y
+            
+            self.results.append(frame_result)
+            frame_count += 1
+            
+            # Прогресс (опционально)
+            if frame_count % 100 == 0:
+                print(f"Обработано кадров: {frame_count}")
+        
+        self.cap.release()
+        return self._create_dataframe()
+    
+    def _create_dataframe(self) -> pd.DataFrame:
+        """
+        Создание DataFrame из результатов
+        
+        Returns:
+            Структурированный DataFrame
+        """
+        # Находим максимальное количество частиц в одном кадре
+        max_particles = max(len(frame_data) - 1 for frame_data in self.results) // 2
+        
+        # Создаем структуру для DataFrame
+        columns = ['frame']
+        for i in range(1, max_particles + 1):
+            columns.extend([f'particle_{i}_x', f'particle_{i}_y'])
+        
+        # Заполняем DataFrame
+        df_data = []
+        for frame_data in self.results:
+            row = [frame_data['frame']]
+            for i in range(1, max_particles + 1):
+                x_key = f'particle_{i}_x'
+                y_key = f'particle_{i}_y'
+                row.append(frame_data.get(x_key, np.nan))
+                row.append(frame_data.get(y_key, np.nan))
+            df_data.append(row)
+        
+        return pd.DataFrame(df_data, columns=columns)
+    
+    def save_results(self, output_path: str = None):
+        """
+        Сохранение результатов в Excel файл
+        
+        Args:
+            output_path: путь для сохранения (если None, сохраняет рядом с видео)
+        """
+        if output_path is None:
+            video_dir = os.path.dirname(self.video_path)
+            video_name = os.path.splitext(os.path.basename(self.video_path))[0]
+            output_path = os.path.join(video_dir, f"{video_name}_analysis.xlsx")
+        
+        df = self._create_dataframe()
+        df.to_excel(output_path, index=False)
+        print(f"Результаты сохранены в: {output_path}")
+        
+        return output_path
+
+def main():
+    """
+    Основная функция программы
+    """
+    # Ввод пути к видео
+    video_path = input("Введите путь к видеофайлу: ").strip().strip('"')
+    
+    # Проверка существования файла
+    if not os.path.exists(video_path):
+        print(f"Файл не найден: {video_path}")
+        return
+    
+    try:
+        # Создание анализатора и обработка видео
+        print("Запуск анализа видео...")
+        analyzer = VideoAnalyzer(video_path)
+        df = analyzer.analyze_video()
+        
+        # Сохранение результатов
+        output_path = analyzer.save_results()
+        
+        # Вывод статистики
+        print(f"\nАнализ завершен!")
+        print(f"Общее количество кадров: {len(df)}")
+        print(f"Максимальное количество частиц в кадре: {(len(df.columns) - 1) // 2}")
+        
+    except Exception as e:
+        print(f"Произошла ошибка: {str(e)}")
+        return
+
+if __name__ == "__main__":
+    main()
