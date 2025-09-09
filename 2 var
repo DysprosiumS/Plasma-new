@@ -1,0 +1,36 @@
+# advanced_detector.py (дополнительный модуль)
+import torch
+import torchvision.transforms as transforms
+from PIL import Image
+import numpy as np
+
+class NeuralPeakDetector:
+    """
+    Расширенный детектор с использованием нейросетей
+    """
+    def __init__(self):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = self._load_model()
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485], std=[0.229])
+        ])
+    
+    def _load_model(self):
+        # Здесь можно загрузить предобученную модель
+        # Например, UNet для сегментации или детектор объектов
+        # В данном примере - заглушка
+        return None
+    
+    def detect_peaks(self, frame: np.ndarray) -> List[Tuple[int, int]]:
+        """
+        Обнаружение пиков с помощью нейросети
+        """
+        # Преобразование для нейросети
+        if self.model is not None:
+            # Реализация с нейросетью
+            pass
+        else:
+            # Fallback на традиционные методы
+            detector = BrightnessPeakDetector()
+            return detector.detect_peaks(frame)
